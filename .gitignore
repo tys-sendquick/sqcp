@@ -1,3 +1,36 @@
+# IDE
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio caches
+*.VC.db
+*.VC.VC.opendb
+ipch/
+*.ipch
+
+# Build outputs
+[Bb]in/
+[Bb]uild/
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+[xX]64/
+[xX]86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+*.tlog
+*.lastbuildstate
+*.log
+*.recipe
+*.cachefile
+*.FileListAbsolute.txt
+*.res
+*.exp
+
 # Prerequisites
 *.d
 
@@ -6,6 +39,7 @@
 *.lo
 *.o
 *.obj
+*.iobj
 
 # Precompiled Headers
 *.gch
@@ -16,6 +50,7 @@
 
 # Debugger Files
 *.pdb
+*.ipdb
 
 # Compiled Dynamic libraries
 *.so
