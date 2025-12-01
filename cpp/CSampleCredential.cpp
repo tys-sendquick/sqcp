@@ -13,8 +13,22 @@
 #define WIN32_NO_STATUS
 #endif
 #include <unknwn.h>
+#include <strsafe.h>
 #include "CSampleCredential.h"
 #include "guid.h"
+#include "utils.h"
+
+namespace
+{
+    void LogHr(_In_z_ LPCWSTR context, HRESULT hr)
+    {
+        wchar_t buffer[128] = {};
+        if (SUCCEEDED(StringCchPrintfW(buffer, ARRAYSIZE(buffer), L"%s hr=0x%08X", context, hr)))
+        {
+            // WriteLogMessage(buffer);
+        }
+    }
+}
 
 CSampleCredential::CSampleCredential():
     _cRef(1),
@@ -60,10 +74,7 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
 {
     HRESULT hr = S_OK;
     _cpus = cpus;
-
-    GUID guidProvider;
-    pcpUser->GetProviderID(&guidProvider);
-    _fIsLocalUser = (guidProvider == Identity_LocalUserProvider);
+    _fIsLocalUser = false;
 
     // Copy the field descriptors for each field. This is useful if you want to vary the field
     // descriptors based on what Usage scenario the credential was created for.
@@ -71,6 +82,11 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     {
         _rgFieldStatePairs[i] = rgfsp[i];
         hr = FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]);
+    }
+    if (FAILED(hr))
+    {
+        LogHr(L"Initialize FieldDescriptorCopy failed", hr);
+        return hr;
     }
 
     // Initialize the String value of all the fields.
@@ -84,7 +100,7 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     }
     if (SUCCEEDED(hr))
     {
-        hr = SHStrDupW(L"Edit Text", &_rgFieldStrings[SFI_EDIT_TEXT]);
+        hr = SHStrDupW(L"", &_rgFieldStrings[SFI_USERNAME]);
     }
     if (SUCCEEDED(hr))
     {
@@ -94,78 +110,23 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     {
         hr = SHStrDupW(L"Submit", &_rgFieldStrings[SFI_SUBMIT_BUTTON]);
     }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Checkbox", &_rgFieldStrings[SFI_CHECKBOX]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Combobox", &_rgFieldStrings[SFI_COMBOBOX]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Launch helper window", &_rgFieldStrings[SFI_LAUNCHWINDOW_LINK]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Hide additional controls", &_rgFieldStrings[SFI_HIDECONTROLS_LINK]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
-    }
-    if (SUCCEEDED(hr))
-    {
-        PWSTR pszUserName;
-        pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName);
-        if (pszUserName != nullptr)
-        {
-            wchar_t szString[256];
-            StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
-            hr = SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]);
-            CoTaskMemFree(pszUserName);
-        }
-        else
-        {
-            hr =  SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
-        }
-    }
-    if (SUCCEEDED(hr))
-    {
-        PWSTR pszDisplayName;
-        pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName);
-        if (pszDisplayName != nullptr)
-        {
-            wchar_t szString[256];
-            StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
-            hr = SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
-            CoTaskMemFree(pszDisplayName);
-        }
-        else
-        {
-            hr = SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
-        }
-    }
-    if (SUCCEEDED(hr))
-    {
-        PWSTR pszLogonStatus;
-        pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus);
-        if (pszLogonStatus != nullptr)
-        {
-            wchar_t szString[256];
-            StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
-            hr = SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
-            CoTaskMemFree(pszLogonStatus);
-        }
-        else
-        {
-            hr = SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
-        }
-    }
 
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr) && pcpUser != nullptr)
     {
-        hr = pcpUser->GetSid(&_pszUserSid);
+        GUID guidProvider;
+        pcpUser->GetProviderID(&guidProvider);
+        _fIsLocalUser = (guidProvider == Identity_LocalUserProvider);
+
+        hr = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
+        if (SUCCEEDED(hr))
+        {
+            hr = pcpUser->GetSid(&_pszUserSid);
+        }
+    }
+    else if (SUCCEEDED(hr))
+    {
+        // CredUI scenario has no bound user. Allow user to type a name.
+        hr = SHStrDupW(L"", &_pszQualifiedUserName);
     }
 
     return hr;
@@ -345,155 +306,55 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
 // Returns whether a checkbox is checked or not as well as its label.
 HRESULT CSampleCredential::GetCheckboxValue(DWORD dwFieldID, _Out_ BOOL *pbChecked, _Outptr_result_nullonfailure_ PWSTR *ppwszLabel)
 {
-    HRESULT hr;
-    *ppwszLabel = nullptr;
-
-    // Validate parameters.
-    if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
-        (CPFT_CHECKBOX == _rgCredProvFieldDescriptors[dwFieldID].cpft))
+    UNREFERENCED_PARAMETER(dwFieldID);
+    UNREFERENCED_PARAMETER(pbChecked);
+    if (ppwszLabel)
     {
-        *pbChecked = _fChecked;
-        hr = SHStrDupW(_rgFieldStrings[SFI_CHECKBOX], ppwszLabel);
+        *ppwszLabel = nullptr;
     }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    return E_NOTIMPL;
 }
 
 // Sets whether the specified checkbox is checked or not.
 HRESULT CSampleCredential::SetCheckboxValue(DWORD dwFieldID, BOOL bChecked)
 {
-    HRESULT hr;
-
-    // Validate parameters.
-    if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
-        (CPFT_CHECKBOX == _rgCredProvFieldDescriptors[dwFieldID].cpft))
-    {
-        _fChecked = bChecked;
-        hr = S_OK;
-    }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    UNREFERENCED_PARAMETER(dwFieldID);
+    UNREFERENCED_PARAMETER(bChecked);
+    return E_NOTIMPL;
 }
 
 // Returns the number of items to be included in the combobox (pcItems), as well as the
 // currently selected item (pdwSelectedItem).
 HRESULT CSampleCredential::GetComboBoxValueCount(DWORD dwFieldID, _Out_ DWORD *pcItems, _Deref_out_range_(<, *pcItems) _Out_ DWORD *pdwSelectedItem)
 {
-    HRESULT hr;
+    UNREFERENCED_PARAMETER(dwFieldID);
     *pcItems = 0;
     *pdwSelectedItem = 0;
-
-    // Validate parameters.
-    if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
-        (CPFT_COMBOBOX == _rgCredProvFieldDescriptors[dwFieldID].cpft))
-    {
-        *pcItems = ARRAYSIZE(s_rgComboBoxStrings);
-        *pdwSelectedItem = 0;
-        hr = S_OK;
-    }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    return E_NOTIMPL;
 }
 
 // Called iteratively to fill the combobox with the string (ppwszItem) at index dwItem.
 HRESULT CSampleCredential::GetComboBoxValueAt(DWORD dwFieldID, DWORD dwItem, _Outptr_result_nullonfailure_ PWSTR *ppwszItem)
 {
-    HRESULT hr;
+    UNREFERENCED_PARAMETER(dwFieldID);
+    UNREFERENCED_PARAMETER(dwItem);
     *ppwszItem = nullptr;
-
-    // Validate parameters.
-    if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
-        (CPFT_COMBOBOX == _rgCredProvFieldDescriptors[dwFieldID].cpft))
-    {
-        hr = SHStrDupW(s_rgComboBoxStrings[dwItem], ppwszItem);
-    }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    return E_NOTIMPL;
 }
 
 // Called when the user changes the selected item in the combobox.
 HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSelectedItem)
 {
-    HRESULT hr;
-
-    // Validate parameters.
-    if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
-        (CPFT_COMBOBOX == _rgCredProvFieldDescriptors[dwFieldID].cpft))
-    {
-        _dwComboIndex = dwSelectedItem;
-        hr = S_OK;
-    }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    UNREFERENCED_PARAMETER(dwFieldID);
+    UNREFERENCED_PARAMETER(dwSelectedItem);
+    return E_NOTIMPL;
 }
 
 // Called when the user clicks a command link.
 HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
 {
-    HRESULT hr = S_OK;
-
-    CREDENTIAL_PROVIDER_FIELD_STATE cpfsShow = CPFS_HIDDEN;
-
-    // Validate parameter.
-    if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
-        (CPFT_COMMAND_LINK == _rgCredProvFieldDescriptors[dwFieldID].cpft))
-    {
-        HWND hwndOwner = nullptr;
-        switch (dwFieldID)
-        {
-        case SFI_LAUNCHWINDOW_LINK:
-            if (_pCredProvCredentialEvents)
-            {
-                _pCredProvCredentialEvents->OnCreatingWindow(&hwndOwner);
-            }
-
-            // Pop a messagebox indicating the click.
-            ::MessageBox(hwndOwner, L"Command link clicked", L"Click!", 0);
-            break;
-        case SFI_HIDECONTROLS_LINK:
-            _pCredProvCredentialEvents->BeginFieldUpdates();
-            cpfsShow = _fShowControls ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
-            _pCredProvCredentialEvents->SetFieldState(nullptr, SFI_FULLNAME_TEXT, cpfsShow);
-            _pCredProvCredentialEvents->SetFieldState(nullptr, SFI_DISPLAYNAME_TEXT, cpfsShow);
-            _pCredProvCredentialEvents->SetFieldState(nullptr, SFI_LOGONSTATUS_TEXT, cpfsShow);
-            _pCredProvCredentialEvents->SetFieldState(nullptr, SFI_CHECKBOX, cpfsShow);
-            _pCredProvCredentialEvents->SetFieldState(nullptr, SFI_EDIT_TEXT, cpfsShow);
-            _pCredProvCredentialEvents->SetFieldState(nullptr, SFI_COMBOBOX, cpfsShow);
-            _pCredProvCredentialEvents->SetFieldString(nullptr, SFI_HIDECONTROLS_LINK, _fShowControls? L"Hide additional controls" : L"Show additional controls");
-            _pCredProvCredentialEvents->EndFieldUpdates();
-            _fShowControls = !_fShowControls;
-            break;
-        default:
-            hr = E_INVALIDARG;
-        }
-
-    }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    UNREFERENCED_PARAMETER(dwFieldID);
+    return E_NOTIMPL;
 }
 
 // Collect the username and password into a serialized credential for the correct usage scenario
@@ -519,46 +380,75 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
         if (SUCCEEDED(hr))
         {
             PWSTR pszDomain;
-            PWSTR pszUsername;
-            hr = SplitDomainAndUsername(_pszQualifiedUserName, &pszDomain, &pszUsername);
+        PWSTR pszUsername;
+        hr = SplitDomainAndUsername(_pszQualifiedUserName, &pszDomain, &pszUsername);
+        if (SUCCEEDED(hr))
+        {
+            KERB_INTERACTIVE_UNLOCK_LOGON kiul;
+            hr = KerbInteractiveUnlockLogonInit(pszDomain, pszUsername, pwzProtectedPassword, _cpus, &kiul);
             if (SUCCEEDED(hr))
             {
-                KERB_INTERACTIVE_UNLOCK_LOGON kiul;
-                hr = KerbInteractiveUnlockLogonInit(pszDomain, pszUsername, pwzProtectedPassword, _cpus, &kiul);
+                // We use KERB_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
+                // KERB_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
+                // as necessary.
+                hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
                 if (SUCCEEDED(hr))
                 {
-                    // We use KERB_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
-                    // KERB_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
-                    // as necessary.
-                    hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
+                    ULONG ulAuthPackage;
+                    hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
                     if (SUCCEEDED(hr))
                     {
-                        ULONG ulAuthPackage;
-                        hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-                        if (SUCCEEDED(hr))
-                        {
-                            pcpcs->ulAuthenticationPackage = ulAuthPackage;
-                            pcpcs->clsidCredentialProvider = CLSID_CSample;
+                        pcpcs->ulAuthenticationPackage = ulAuthPackage;
+                        pcpcs->clsidCredentialProvider = CLSID_CSample;
                             // At this point the credential has created the serialized credential used for logon
                             // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
                             // that we have all the information we need and it should attempt to submit the
                             // serialized credential.
                             *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                        }
+                    }
+                    else
+                    {
+                        LogHr(L"GetSerialization RetrieveNegotiateAuthPackage failed", hr);
                     }
                 }
-                CoTaskMemFree(pszDomain);
-                CoTaskMemFree(pszUsername);
+                else
+                {
+                    LogHr(L"GetSerialization KerbInteractiveUnlockLogonPack failed", hr);
+                }
             }
-            CoTaskMemFree(pwzProtectedPassword);
+            else
+            {
+                LogHr(L"GetSerialization KerbInteractiveUnlockLogonInit failed", hr);
+            }
+            CoTaskMemFree(pszDomain);
+            CoTaskMemFree(pszUsername);
         }
+        else
+        {
+            LogHr(L"GetSerialization SplitDomainAndUsername failed", hr);
+        }
+        CoTaskMemFree(pwzProtectedPassword);
     }
+}
     else
     {
         DWORD dwAuthFlags = CRED_PACK_PROTECTED_CREDENTIALS | CRED_PACK_ID_PROVIDER_CREDENTIALS;
+        PCWSTR pszUserNameForSerialization = _pszQualifiedUserName;
+
+        // In CredUI we may not have a bound user; fall back to what the user typed.
+        if ((_cpus == CPUS_CREDUI) || (pszUserNameForSerialization == nullptr) || (*pszUserNameForSerialization == L'\0'))
+        {
+            pszUserNameForSerialization = _rgFieldStrings[SFI_USERNAME];
+        }
+
+        if (pszUserNameForSerialization == nullptr || *pszUserNameForSerialization == L'\0')
+        {
+            // WriteLogMessage(L"GetSerialization missing username");
+            return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+        }
 
         // First get the size of the authentication buffer to allocate
-        if (!CredPackAuthenticationBuffer(dwAuthFlags, _pszQualifiedUserName, const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), nullptr, &pcpcs->cbSerialization) &&
+        if (!CredPackAuthenticationBuffer(dwAuthFlags, const_cast<PWSTR>(pszUserNameForSerialization), const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), nullptr, &pcpcs->cbSerialization) &&
             (GetLastError() == ERROR_INSUFFICIENT_BUFFER))
         {
             pcpcs->rgbSerialization = static_cast<byte *>(CoTaskMemAlloc(pcpcs->cbSerialization));
@@ -567,7 +457,7 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
                 hr = S_OK;
 
                 // Retrieve the authentication buffer
-                if (CredPackAuthenticationBuffer(dwAuthFlags, _pszQualifiedUserName, const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), pcpcs->rgbSerialization, &pcpcs->cbSerialization))
+                if (CredPackAuthenticationBuffer(dwAuthFlags, const_cast<PWSTR>(pszUserNameForSerialization), const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), pcpcs->rgbSerialization, &pcpcs->cbSerialization))
                 {
                     ULONG ulAuthPackage;
                     hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
@@ -586,6 +476,7 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
                 else
                 {
                     hr = HRESULT_FROM_WIN32(GetLastError());
+                    LogHr(L"GetSerialization CredPackAuthenticationBuffer failed", hr);
                     if (SUCCEEDED(hr))
                     {
                         hr = E_FAIL;
@@ -670,7 +561,8 @@ HRESULT CSampleCredential::ReportResult(NTSTATUS ntsStatus,
 HRESULT CSampleCredential::GetUserSid(_Outptr_result_nullonfailure_ PWSTR *ppszSid)
 {
     *ppszSid = nullptr;
-    HRESULT hr = E_UNEXPECTED;
+    HRESULT hr = S_FALSE;
+
     if (_pszUserSid != nullptr)
     {
         hr = SHStrDupW(_pszUserSid, ppszSid);
