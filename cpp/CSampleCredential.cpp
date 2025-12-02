@@ -25,7 +25,7 @@ namespace
         wchar_t buffer[128] = {};
         if (SUCCEEDED(StringCchPrintfW(buffer, ARRAYSIZE(buffer), L"%s hr=0x%08X", context, hr)))
         {
-            // WriteLogMessage(buffer);
+            WriteLogMessage(buffer);
         }
     }
 }
@@ -357,145 +357,172 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
     return E_NOTIMPL;
 }
 
-// Collect the username and password into a serialized credential for the correct usage scenario
-// (logon/unlock is what's demonstrated in this sample).  LogonUI then passes these credentials
-// back to the system to log on.
-HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE *pcpgsr,
-                                            _Out_ CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION *pcpcs,
-                                            _Outptr_result_maybenull_ PWSTR *ppwszOptionalStatusText,
-                                            _Out_ CREDENTIAL_PROVIDER_STATUS_ICON *pcpsiOptionalStatusIcon)
+HRESULT CSampleCredential::GetSerialization(
+    _Out_ CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE *pcpgsr,
+    _Out_ CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION *pcpcs,
+    _Outptr_result_maybenull_ PWSTR *ppwszOptionalStatusText,
+    _Out_ CREDENTIAL_PROVIDER_STATUS_ICON *pcpsiOptionalStatusIcon)
 {
     HRESULT hr = E_UNEXPECTED;
+
+    // Initialize out params
     *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
     *ppwszOptionalStatusText = nullptr;
     *pcpsiOptionalStatusIcon = CPSI_NONE;
     ZeroMemory(pcpcs, sizeof(*pcpcs));
 
-    // For local user, the domain and user name can be split from _pszQualifiedUserName (domain\username).
-    // CredPackAuthenticationBuffer() cannot be used because it won't work with unlock scenario.
-    if (_fIsLocalUser)
+    // We will now use a single serialization path for:
+    // LOGON, UNLOCK, and CREDUI.
+    // This avoids KERB_* manual struct packing which is a common
+    // source of LSASS/msv1_0 crashes when anything is mis-sized.
+    if (_cpus == CPUS_LOGON || _cpus == CPUS_UNLOCK_WORKSTATION || _cpus == CPUS_CREDUI)
     {
-        PWSTR pwzProtectedPassword;
-        hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
-        if (SUCCEEDED(hr))
+        PWSTR pszUserNameForSerialization = nullptr;
+        PWSTR pwzProtectedPassword = nullptr;
+
+        //
+        // 1) Decide what username to serialize
+        //
+        // Prefer _pszQualifiedUserName (e.g. "DOMAIN\\user" or UPN) when available.
+        // Otherwise, fall back to the typed username field.
+        //
+        if (_pszQualifiedUserName != nullptr && *_pszQualifiedUserName != L'\0')
         {
-            PWSTR pszDomain;
-        PWSTR pszUsername;
-        hr = SplitDomainAndUsername(_pszQualifiedUserName, &pszDomain, &pszUsername);
-        if (SUCCEEDED(hr))
-        {
-            KERB_INTERACTIVE_UNLOCK_LOGON kiul;
-            hr = KerbInteractiveUnlockLogonInit(pszDomain, pszUsername, pwzProtectedPassword, _cpus, &kiul);
-            if (SUCCEEDED(hr))
-            {
-                // We use KERB_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
-                // KERB_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
-                // as necessary.
-                hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
-                if (SUCCEEDED(hr))
-                {
-                    ULONG ulAuthPackage;
-                    hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-                    if (SUCCEEDED(hr))
-                    {
-                        pcpcs->ulAuthenticationPackage = ulAuthPackage;
-                        pcpcs->clsidCredentialProvider = CLSID_CSample;
-                            // At this point the credential has created the serialized credential used for logon
-                            // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-                            // that we have all the information we need and it should attempt to submit the
-                            // serialized credential.
-                            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                    }
-                    else
-                    {
-                        LogHr(L"GetSerialization RetrieveNegotiateAuthPackage failed", hr);
-                    }
-                }
-                else
-                {
-                    LogHr(L"GetSerialization KerbInteractiveUnlockLogonPack failed", hr);
-                }
-            }
-            else
-            {
-                LogHr(L"GetSerialization KerbInteractiveUnlockLogonInit failed", hr);
-            }
-            CoTaskMemFree(pszDomain);
-            CoTaskMemFree(pszUsername);
+            pszUserNameForSerialization = _pszQualifiedUserName;
         }
         else
-        {
-            LogHr(L"GetSerialization SplitDomainAndUsername failed", hr);
-        }
-        CoTaskMemFree(pwzProtectedPassword);
-    }
-}
-    else
-    {
-        DWORD dwAuthFlags = CRED_PACK_PROTECTED_CREDENTIALS | CRED_PACK_ID_PROVIDER_CREDENTIALS;
-        PCWSTR pszUserNameForSerialization = _pszQualifiedUserName;
-
-        // In CredUI we may not have a bound user; fall back to what the user typed.
-        if ((_cpus == CPUS_CREDUI) || (pszUserNameForSerialization == nullptr) || (*pszUserNameForSerialization == L'\0'))
         {
             pszUserNameForSerialization = _rgFieldStrings[SFI_USERNAME];
         }
 
         if (pszUserNameForSerialization == nullptr || *pszUserNameForSerialization == L'\0')
         {
-            // WriteLogMessage(L"GetSerialization missing username");
-            return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+            hr = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+            WriteLogMessage(L"GetSerialization: missing username");
+            return hr;
         }
 
-        // First get the size of the authentication buffer to allocate
-        if (!CredPackAuthenticationBuffer(dwAuthFlags, const_cast<PWSTR>(pszUserNameForSerialization), const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), nullptr, &pcpcs->cbSerialization) &&
-            (GetLastError() == ERROR_INSUFFICIENT_BUFFER))
+        //
+        // 2) Protect/copy the password (your existing helper)
+        //
+        hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
+        if (FAILED(hr))
         {
-            pcpcs->rgbSerialization = static_cast<byte *>(CoTaskMemAlloc(pcpcs->cbSerialization));
-            if (pcpcs->rgbSerialization != nullptr)
-            {
-                hr = S_OK;
-
-                // Retrieve the authentication buffer
-                if (CredPackAuthenticationBuffer(dwAuthFlags, const_cast<PWSTR>(pszUserNameForSerialization), const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), pcpcs->rgbSerialization, &pcpcs->cbSerialization))
-                {
-                    ULONG ulAuthPackage;
-                    hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-                    if (SUCCEEDED(hr))
-                    {
-                        pcpcs->ulAuthenticationPackage = ulAuthPackage;
-                        pcpcs->clsidCredentialProvider = CLSID_CSample;
-
-                        // At this point the credential has created the serialized credential used for logon
-                        // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-                        // that we have all the information we need and it should attempt to submit the
-                        // serialized credential.
-                        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                    }
-                }
-                else
-                {
-                    hr = HRESULT_FROM_WIN32(GetLastError());
-                    LogHr(L"GetSerialization CredPackAuthenticationBuffer failed", hr);
-                    if (SUCCEEDED(hr))
-                    {
-                        hr = E_FAIL;
-                    }
-                }
-
-                if (FAILED(hr))
-                {
-                    CoTaskMemFree(pcpcs->rgbSerialization);
-                }
-            }
-            else
-            {
-                hr = E_OUTOFMEMORY;
-            }
+            LogHr(L"GetSerialization: ProtectIfNecessaryAndCopyPassword failed", hr);
+            return hr;
         }
+
+        //
+        // 3) Determine CredPack flags
+        //
+        DWORD dwAuthFlags = 0;
+
+        // If password protection actually happened, it's typically safe to set CRED_PACK_PROTECTED_CREDENTIALS.
+        // (If your helper sometimes returns the original pointer unchanged, you can refine this check.)
+        if (pwzProtectedPassword != nullptr && pwzProtectedPassword != _rgFieldStrings[SFI_PASSWORD])
+        {
+            dwAuthFlags |= CRED_PACK_PROTECTED_CREDENTIALS;
+        }
+
+        // You were using CRED_PACK_ID_PROVIDER_CREDENTIALS for CREDUI; if you still
+        // require that behavior specifically, you can conditionally OR it in here:
+        // if (_cpus == CPUS_CREDUI) dwAuthFlags |= CRED_PACK_ID_PROVIDER_CREDENTIALS;
+
+        //
+        // 4) First CredPackAuthenticationBufferW call: get required size
+        //
+        DWORD cbSerialization = 0;
+
+        if (CredPackAuthenticationBufferW(
+                dwAuthFlags,
+                pszUserNameForSerialization,
+                pwzProtectedPassword,
+                nullptr,
+                &cbSerialization) ||
+            (GetLastError() != ERROR_INSUFFICIENT_BUFFER))
+        {
+            // We *expect* ERROR_INSUFFICIENT_BUFFER on this first call.
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            LogHr(L"GetSerialization: First CredPackAuthenticationBufferW (size query) failed", hr);
+            CoTaskMemFree(pwzProtectedPassword);
+            return hr;
+        }
+
+        //
+        // 5) Allocate buffer with CoTaskMemAlloc (required by CP contract)
+        //
+        pcpcs->rgbSerialization = static_cast<byte *>(CoTaskMemAlloc(cbSerialization));
+        if (pcpcs->rgbSerialization == nullptr)
+        {
+            hr = E_OUTOFMEMORY;
+            LogHr(L"GetSerialization: CoTaskMemAlloc for rgbSerialization failed", hr);
+            CoTaskMemFree(pwzProtectedPassword);
+            return hr;
+        }
+
+        pcpcs->cbSerialization = cbSerialization;
+
+        //
+        // 6) Second CredPackAuthenticationBufferW call: fill the buffer
+        //
+        if (!CredPackAuthenticationBufferW(
+                dwAuthFlags,
+                pszUserNameForSerialization,
+                pwzProtectedPassword,
+                pcpcs->rgbSerialization,
+                &pcpcs->cbSerialization))
+        {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            LogHr(L"GetSerialization: Second CredPackAuthenticationBufferW (pack) failed", hr);
+
+            CoTaskMemFree(pcpcs->rgbSerialization);
+            pcpcs->rgbSerialization = nullptr;
+            pcpcs->cbSerialization = 0;
+
+            CoTaskMemFree(pwzProtectedPassword);
+            return hr;
+        }
+
+        //
+        // 7) Retrieve the Negotiate auth package and finish filling serialization
+        //
+        ULONG ulAuthPackage = 0;
+        hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
+        if (FAILED(hr))
+        {
+            LogHr(L"GetSerialization: RetrieveNegotiateAuthPackage failed", hr);
+
+            CoTaskMemFree(pcpcs->rgbSerialization);
+            pcpcs->rgbSerialization = nullptr;
+            pcpcs->cbSerialization = 0;
+
+            CoTaskMemFree(pwzProtectedPassword);
+            return hr;
+        }
+
+        pcpcs->ulAuthenticationPackage = ulAuthPackage;
+        pcpcs->clsidCredentialProvider = CLSID_CSample;
+
+        //
+        // 8) Tell LogonUI that we're done and it should submit these creds
+        //
+        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+        hr = S_OK;
+
+        //
+        // 9) Cleanup
+        //
+        CoTaskMemFree(pwzProtectedPassword);
+        return hr;
     }
+
+    //
+    // If we reach here, _cpus was not a scenario we handle.
+    //
+    WriteLogMessage(L"GetSerialization: unsupported CPUS value");
     return hr;
 }
+
 
 struct REPORT_RESULT_STATUS_INFO
 {

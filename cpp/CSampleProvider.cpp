@@ -25,7 +25,7 @@ namespace
         wchar_t buffer[128] = {};
         if (SUCCEEDED(StringCchPrintfW(buffer, ARRAYSIZE(buffer), L"%s hr=0x%08X", context, hr)))
         {
-            // WriteLogMessage(buffer);
+            WriteLogMessage(buffer);
         }
     }
 }
@@ -238,7 +238,7 @@ void CSampleProvider::_CreateEnumeratedCredentials()
 
 void CSampleProvider::_ReleaseEnumeratedCredentials()
 {
-    // WriteLogMessage(L"_ReleaseEnumeratedCredentials");
+    WriteLogMessage(L"_ReleaseEnumeratedCredentials");
     if (_pCredential != nullptr)
     {
         _pCredential->Release();
@@ -248,7 +248,7 @@ void CSampleProvider::_ReleaseEnumeratedCredentials()
 
 HRESULT CSampleProvider::_EnumerateCredentials()
 {
-    // WriteLogMessage(L"_EnumerateCredentials start");
+    WriteLogMessage(L"_EnumerateCredentials start");
     HRESULT hr = E_UNEXPECTED;
     ICredentialProviderUser *pCredUser = nullptr;
 
@@ -265,14 +265,14 @@ HRESULT CSampleProvider::_EnumerateCredentials()
             wchar_t countBuf[128] = {};
             if (SUCCEEDED(StringCchPrintfW(countBuf, ARRAYSIZE(countBuf), L"_EnumerateCredentials GetCount failed hr=0x%08X", hrCount)))
             {
-                // WriteLogMessage(countBuf);
+                WriteLogMessage(countBuf);
             }
         }
     }
 
     if (_cpus != CPUS_CREDUI && pCredUser == nullptr)
     {
-        // WriteLogMessage(L"_EnumerateCredentials no user available, aborting");
+        WriteLogMessage(L"_EnumerateCredentials no user available, aborting");
         return hr;
     }
 
@@ -283,7 +283,7 @@ HRESULT CSampleProvider::_EnumerateCredentials()
         wchar_t initBuf[128] = {};
         if (SUCCEEDED(StringCchPrintfW(initBuf, ARRAYSIZE(initBuf), L"_EnumerateCredentials Initialize hr=0x%08X", hr)))
         {
-            // WriteLogMessage(initBuf);
+            WriteLogMessage(initBuf);
         }
         if (FAILED(hr))
         {
@@ -294,7 +294,7 @@ HRESULT CSampleProvider::_EnumerateCredentials()
     else
     {
         hr = E_OUTOFMEMORY;
-        // WriteLogMessage(L"_EnumerateCredentials allocation failed");
+        WriteLogMessage(L"_EnumerateCredentials allocation failed");
     }
 
     if (pCredUser)
