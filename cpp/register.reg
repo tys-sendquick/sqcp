@@ -10,3 +10,14 @@ Windows Registry Editor Version 5.00
 @="SampleV2CredentialProvider.dll"
 "ThreadingModel"="Apartment"
 
+; Credential Provider Filter registration
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters\{d93973b6-649c-40c3-9d92-4f52427fcd9f}]
+@="SampleV2CredentialProviderFilter"
+
+[HKEY_CLASSES_ROOT\CLSID\{d93973b6-649c-40c3-9d92-4f52427fcd9f}]
+@="SampleV2CredentialProviderFilter"
+
+[HKEY_CLASSES_ROOT\CLSID\{d93973b6-649c-40c3-9d92-4f52427fcd9f}\InprocServer32]
+@="SampleV2CredentialProvider.dll"
+"ThreadingModel"="Apartment"
+
