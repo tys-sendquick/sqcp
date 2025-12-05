@@ -379,6 +379,7 @@ HRESULT CSampleCredential::GetSerialization(
     {
         PWSTR pszUserNameForSerialization = nullptr;
         PWSTR pwzProtectedPassword = nullptr;
+        WriteLogMessage(L"[CREDENTIAL] GetSerialization start");
 
         //
         // 1) Decide what username to serialize
@@ -508,6 +509,7 @@ HRESULT CSampleCredential::GetSerialization(
         //
         *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
         hr = S_OK;
+        WriteLogMessage(L"[CREDENTIAL] GetSerialization succeeded");
 
         //
         // 9) Cleanup
@@ -577,6 +579,11 @@ HRESULT CSampleCredential::ReportResult(NTSTATUS ntsStatus,
         {
             _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, L"");
         }
+        LogHr(L"[CREDENTIAL] ReportResult logon failure", HRESULT_FROM_NT(ntsStatus));
+    }
+    else
+    {
+        WriteLogMessage(L"[CREDENTIAL] ReportResult success/continue");
     }
 
     // Since nullptr is a valid value for *ppwszOptionalStatusText and *pcpsiOptionalStatusIcon

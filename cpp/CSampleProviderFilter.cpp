@@ -4,24 +4,52 @@
 #include <credentialprovider.h>
 #include <strsafe.h>
 
+#ifndef CPF_REMOTE_SESSION
+#define CPF_REMOTE_SESSION 0x1
+#endif
+#ifndef CPF_REMOTE_CONNECTION
+#define CPF_REMOTE_CONNECTION 0x2
+#endif
+
+namespace
+{
+    bool IsRemoteSession(DWORD flags)
+    {
+        return (flags & CPF_REMOTE_SESSION) != 0 ||
+               (flags & CPF_REMOTE_CONNECTION) != 0;
+    }
+
+    void ApplyExclusiveFilter(GUID* rgclsidProviders,
+                              BOOL* rgbAllow,
+                              DWORD cProviders)
+    {
+        for (DWORD i = 0; i < cProviders; i++)
+        {
+            const GUID& clsid = rgclsidProviders[i];
+            BOOL allow = IsEqualGUID(clsid, CLSID_CSample); // keep only our provider
+            rgbAllow[i] = allow;
+        }
+    }
+}
+
 //
-// FUTURE BEHAVIOR HOOKS
+// Extra Checks
 //
 bool ShouldUseExclusiveMode()
 {
-    // Future: return true to hide all other credential providers except ours
+    // return true to hide all other credential providers
     return false;
 }
 
 bool ShouldBlockWindowsHello()
 {
-    // Future: implement blocking Windows Hello / PIN providers
+    // return true to block Windows Hello / PIN providers
     return false;
 }
 
 bool ShouldBlockSmartCard()
 {
-    // Future: implement blocking Smart Card providers
+    // return true to block Smart Card providers
     return false;
 }
 
@@ -30,7 +58,7 @@ bool ShouldBlockSmartCard()
 //
 HRESULT CSampleProviderFilter::Filter(
     CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
-    DWORD /*dwFlags*/,
+    DWORD dwFlags,
     GUID* rgclsidProviders,
     BOOL* rgbAllow,
     DWORD cProviders)
@@ -50,6 +78,22 @@ HRESULT CSampleProviderFilter::Filter(
     StringCchPrintfW(logBuffer, ARRAYSIZE(logBuffer), 
         L"[FILTER] Filter called: scenario=%s, providers=%u", scenarioName, cProviders);
     WriteLogMessage(logBuffer);
+
+    // CredUI: allow only our provider in the RDP client dialog.
+    if (cpus == CPUS_CREDUI)
+    {
+        ApplyExclusiveFilter(rgclsidProviders, rgbAllow, cProviders);
+        WriteLogMessage(L"[FILTER] CredUI detected: applying exclusive filter to keep only CSample");
+        return hr;
+    }
+
+    // Remote-only: block all other providers during RDP sessions. This is on host side
+    if (IsRemoteSession(dwFlags))
+    {
+        ApplyExclusiveFilter(rgclsidProviders, rgbAllow, cProviders);
+        WriteLogMessage(L"[FILTER] Remote session detected: applying exclusive filter to keep only CSample");
+        return hr;
+    }
 
     for (DWORD i = 0; i < cProviders; i++)
     {

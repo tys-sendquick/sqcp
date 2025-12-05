@@ -28,6 +28,18 @@ namespace
             WriteLogMessage(buffer);
         }
     }
+
+    LPCWSTR ScenarioName(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus)
+    {
+        switch (cpus)
+        {
+        case CPUS_LOGON: return L"LOGON";
+        case CPUS_UNLOCK_WORKSTATION: return L"UNLOCK";
+        case CPUS_CREDUI: return L"CREDUI";
+        case CPUS_CHANGE_PASSWORD: return L"CHANGE_PASSWORD";
+        default: return L"UNKNOWN";
+        }
+    }
 }
 
 CSampleProvider::CSampleProvider():
@@ -64,6 +76,12 @@ HRESULT CSampleProvider::SetUsageScenario(
 
     // Decide which scenarios to support here. Returning E_NOTIMPL simply tells the caller
     // that we're not designed for that scenario.
+    wchar_t scenarioBuf[96] = {};
+    if (SUCCEEDED(StringCchPrintfW(scenarioBuf, ARRAYSIZE(scenarioBuf), L"[PROVIDER] SetUsageScenario %s", ScenarioName(cpus))))
+    {
+        WriteLogMessage(scenarioBuf);
+    }
+
     switch (cpus)
     {
     case CPUS_LOGON:
@@ -78,10 +96,12 @@ HRESULT CSampleProvider::SetUsageScenario(
 
     case CPUS_CHANGE_PASSWORD:
         hr = E_NOTIMPL;
+        LogProviderHr(L"[PROVIDER] SetUsageScenario change-password not implemented", hr);
         break;
 
     default:
         hr = E_INVALIDARG;
+        LogProviderHr(L"[PROVIDER] SetUsageScenario invalid scenario", hr);
         break;
     }
 
@@ -112,6 +132,7 @@ HRESULT CSampleProvider::SetSerialization(
     // Accept serializations so the provider can participate in CredUI. The current sample
     // does not pre-populate fields from the buffer, but returning S_OK keeps the tile available.
     _fRecreateEnumeratedCredentials = true;
+    WriteLogMessage(L"[PROVIDER] SetSerialization called");
     return S_OK;
 }
 
@@ -188,6 +209,8 @@ HRESULT CSampleProvider::GetCredentialCount(
 
     *pdwCount = 1;
 
+    WriteLogMessage(L"[PROVIDER] GetCredentialCount returning 1 credential");
+
     return S_OK;
 }
 
@@ -203,6 +226,7 @@ HRESULT CSampleProvider::GetCredentialAt(
     if ((dwIndex == 0) && ppcpc)
     {
         hr = _pCredential->QueryInterface(IID_PPV_ARGS(ppcpc));
+        WriteLogMessage(L"[PROVIDER] GetCredentialAt index 0");
     }
     return hr;
 }
