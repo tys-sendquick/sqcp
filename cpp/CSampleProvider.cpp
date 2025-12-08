@@ -12,9 +12,35 @@
 // available UI controls.
 
 #include <initguid.h>
+#include <strsafe.h>
 #include "CSampleProvider.h"
 #include "CSampleCredential.h"
 #include "guid.h"
+#include "utils.h"
+
+namespace
+{
+    void LogProviderHr(_In_z_ LPCWSTR context, HRESULT hr)
+    {
+        wchar_t buffer[128] = {};
+        if (SUCCEEDED(StringCchPrintfW(buffer, ARRAYSIZE(buffer), L"%s hr=0x%08X", context, hr)))
+        {
+            WriteLogMessage(buffer);
+        }
+    }
+
+    LPCWSTR ScenarioName(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus)
+    {
+        switch (cpus)
+        {
+        case CPUS_LOGON: return L"LOGON";
+        case CPUS_UNLOCK_WORKSTATION: return L"UNLOCK";
+        case CPUS_CREDUI: return L"CREDUI";
+        case CPUS_CHANGE_PASSWORD: return L"CHANGE_PASSWORD";
+        default: return L"UNKNOWN";
+        }
+    }
+}
 
 CSampleProvider::CSampleProvider():
     _cRef(1),
@@ -50,10 +76,17 @@ HRESULT CSampleProvider::SetUsageScenario(
 
     // Decide which scenarios to support here. Returning E_NOTIMPL simply tells the caller
     // that we're not designed for that scenario.
+    wchar_t scenarioBuf[96] = {};
+    if (SUCCEEDED(StringCchPrintfW(scenarioBuf, ARRAYSIZE(scenarioBuf), L"[PROVIDER] SetUsageScenario %s", ScenarioName(cpus))))
+    {
+        WriteLogMessage(scenarioBuf);
+    }
+
     switch (cpus)
     {
     case CPUS_LOGON:
     case CPUS_UNLOCK_WORKSTATION:
+    case CPUS_CREDUI:
         // The reason why we need _fRecreateEnumeratedCredentials is because ICredentialProviderSetUserArray::SetUserArray() is called after ICredentialProvider::SetUsageScenario(),
         // while we need the ICredentialProviderUserArray during enumeration in ICredentialProvider::GetCredentialCount()
         _cpus = cpus;
@@ -62,12 +95,13 @@ HRESULT CSampleProvider::SetUsageScenario(
         break;
 
     case CPUS_CHANGE_PASSWORD:
-    case CPUS_CREDUI:
         hr = E_NOTIMPL;
+        LogProviderHr(L"[PROVIDER] SetUsageScenario change-password not implemented", hr);
         break;
 
     default:
         hr = E_INVALIDARG;
+        LogProviderHr(L"[PROVIDER] SetUsageScenario invalid scenario", hr);
         break;
     }
 
@@ -95,7 +129,11 @@ HRESULT CSampleProvider::SetUsageScenario(
 HRESULT CSampleProvider::SetSerialization(
     _In_ CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION const * /*pcpcs*/)
 {
-    return E_NOTIMPL;
+    // Accept serializations so the provider can participate in CredUI. The current sample
+    // does not pre-populate fields from the buffer, but returning S_OK keeps the tile available.
+    _fRecreateEnumeratedCredentials = true;
+    WriteLogMessage(L"[PROVIDER] SetSerialization called");
+    return S_OK;
 }
 
 // Called by LogonUI to give you a callback.  Providers often use the callback if they
@@ -171,6 +209,8 @@ HRESULT CSampleProvider::GetCredentialCount(
 
     *pdwCount = 1;
 
+    WriteLogMessage(L"[PROVIDER] GetCredentialCount returning 1 credential");
+
     return S_OK;
 }
 
@@ -186,6 +226,7 @@ HRESULT CSampleProvider::GetCredentialAt(
     if ((dwIndex == 0) && ppcpc)
     {
         hr = _pCredential->QueryInterface(IID_PPV_ARGS(ppcpc));
+        WriteLogMessage(L"[PROVIDER] GetCredentialAt index 0");
     }
     return hr;
 }
@@ -209,6 +250,7 @@ void CSampleProvider::_CreateEnumeratedCredentials()
     {
     case CPUS_LOGON:
     case CPUS_UNLOCK_WORKSTATION:
+    case CPUS_CREDUI:
         {
             _EnumerateCredentials();
             break;
@@ -220,6 +262,7 @@ void CSampleProvider::_CreateEnumeratedCredentials()
 
 void CSampleProvider::_ReleaseEnumeratedCredentials()
 {
+    WriteLogMessage(L"_ReleaseEnumeratedCredentials");
     if (_pCredential != nullptr)
     {
         _pCredential->Release();
@@ -229,35 +272,60 @@ void CSampleProvider::_ReleaseEnumeratedCredentials()
 
 HRESULT CSampleProvider::_EnumerateCredentials()
 {
+    WriteLogMessage(L"_EnumerateCredentials start");
     HRESULT hr = E_UNEXPECTED;
+    ICredentialProviderUser *pCredUser = nullptr;
+
     if (_pCredProviderUserArray != nullptr)
     {
-        DWORD dwUserCount;
-        _pCredProviderUserArray->GetCount(&dwUserCount);
-        if (dwUserCount > 0)
+        DWORD dwUserCount = 0;
+        HRESULT hrCount = _pCredProviderUserArray->GetCount(&dwUserCount);
+        if (SUCCEEDED(hrCount) && dwUserCount > 0)
         {
-            ICredentialProviderUser *pCredUser;
-            hr = _pCredProviderUserArray->GetAt(0, &pCredUser);
-            if (SUCCEEDED(hr))
+            _pCredProviderUserArray->GetAt(0, &pCredUser);
+        }
+        else
+        {
+            wchar_t countBuf[128] = {};
+            if (SUCCEEDED(StringCchPrintfW(countBuf, ARRAYSIZE(countBuf), L"_EnumerateCredentials GetCount failed hr=0x%08X", hrCount)))
             {
-                _pCredential = new(std::nothrow) CSampleCredential();
-                if (_pCredential != nullptr)
-                {
-                    hr = _pCredential->Initialize(_cpus, s_rgCredProvFieldDescriptors, s_rgFieldStatePairs, pCredUser);
-                    if (FAILED(hr))
-                    {
-                        _pCredential->Release();
-                        _pCredential = nullptr;
-                    }
-                }
-                else
-                {
-                    hr = E_OUTOFMEMORY;
-                }
-                pCredUser->Release();
+                WriteLogMessage(countBuf);
             }
         }
     }
+
+    if (_cpus != CPUS_CREDUI && pCredUser == nullptr)
+    {
+        WriteLogMessage(L"_EnumerateCredentials no user available, aborting");
+        return hr;
+    }
+
+    _pCredential = new(std::nothrow) CSampleCredential();
+    if (_pCredential != nullptr)
+    {
+        hr = _pCredential->Initialize(_cpus, s_rgCredProvFieldDescriptors, s_rgFieldStatePairs, pCredUser);
+        wchar_t initBuf[128] = {};
+        if (SUCCEEDED(StringCchPrintfW(initBuf, ARRAYSIZE(initBuf), L"_EnumerateCredentials Initialize hr=0x%08X", hr)))
+        {
+            WriteLogMessage(initBuf);
+        }
+        if (FAILED(hr))
+        {
+            _pCredential->Release();
+            _pCredential = nullptr;
+        }
+    }
+    else
+    {
+        hr = E_OUTOFMEMORY;
+        WriteLogMessage(L"_EnumerateCredentials allocation failed");
+    }
+
+    if (pCredUser)
+    {
+        pCredUser->Release();
+    }
+
     return hr;
 }
 

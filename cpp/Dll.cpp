@@ -12,17 +12,24 @@
 #include <unknwn.h>
 #include "Dll.h"
 #include "helpers.h"
+#include "CSampleProviderFilter.h"
 
 static long g_cRef = 0;   // global dll reference count
 HINSTANCE g_hinst = NULL; // global dll hinstance
 
 extern HRESULT CSample_CreateInstance(__in REFIID riid, __deref_out void** ppv);
+extern HRESULT CSampleFilter_CreateInstance(__in REFIID riid, __deref_out void** ppv);
 EXTERN_C GUID CLSID_CSample;
+EXTERN_C GUID CLSID_CSampleFilter;
 
 class CClassFactory : public IClassFactory
 {
 public:
-    CClassFactory() : _cRef(1)
+    typedef HRESULT (*PFNCREATEINSTANCE)(__in REFIID riid, __deref_out void **ppv);
+
+    CClassFactory(PFNCREATEINSTANCE pfnCreate) :
+        _cRef(1),
+        _pfnCreate(pfnCreate)
     {
     }
 
@@ -56,7 +63,7 @@ public:
         HRESULT hr;
         if (!pUnkOuter)
         {
-            hr = CSample_CreateInstance(riid, ppv);
+            hr = _pfnCreate ? _pfnCreate(riid, ppv) : E_POINTER;
         }
         else
         {
@@ -84,6 +91,7 @@ private:
     {
     }
     long _cRef;
+    PFNCREATEINSTANCE _pfnCreate;
 };
 
 HRESULT CClassFactory_CreateInstance(__in REFCLSID rclsid, __in REFIID riid, __deref_out void **ppv)
@@ -91,23 +99,31 @@ HRESULT CClassFactory_CreateInstance(__in REFCLSID rclsid, __in REFIID riid, __d
     *ppv = NULL;
 
     HRESULT hr;
+    CClassFactory::PFNCREATEINSTANCE pfnCreate = nullptr;
 
     if (CLSID_CSample == rclsid)
     {
-        CClassFactory* pcf = new CClassFactory();
-        if (pcf)
-        {
-            hr = pcf->QueryInterface(riid, ppv);
-            pcf->Release();
-        }
-        else
-        {
-            hr = E_OUTOFMEMORY;
-        }
+        pfnCreate = CSample_CreateInstance;
+    }
+    else if (CLSID_CSampleFilter == rclsid)
+    {
+        pfnCreate = CSampleFilter_CreateInstance;
     }
     else
     {
         hr = CLASS_E_CLASSNOTAVAILABLE;
+        return hr;
+    }
+
+    CClassFactory* pcf = new CClassFactory(pfnCreate);
+    if (pcf)
+    {
+        hr = pcf->QueryInterface(riid, ppv);
+        pcf->Release();
+    }
+    else
+    {
+        hr = E_OUTOFMEMORY;
     }
     return hr;
 }
